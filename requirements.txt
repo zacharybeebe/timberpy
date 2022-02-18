@@ -1,0 +1,6 @@
+fpdf
+numpy
+openpyxl
+pandas
+plotly
+xlrd
