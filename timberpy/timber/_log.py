@@ -1,15 +1,15 @@
 import pandas as pd
-from timberpy.timber.timber_config import (
+from timberpy.timber._config import (
     GRADE_NAMES,
     LOG_LENGTHS,
     LOG_SERIES,
     OFFICIAL_GRADES,
     SCRIBNER_DICT
 )
-from timberpy.timber.timber_exceptions import (
-    LogGradeError,
-    ReadOnlyAttributeError,
-    TimberArgError
+from timberpy.timber._exceptions import (
+    cannot_set,
+    check_timber_arg,
+    check_log_grade
 )
 
 
@@ -17,15 +17,15 @@ class Log(object):
     def __init__(self, timber, stem_height: int, length: int, grade: str = '', defect: int = 0):
         """
         Log Class calculates the volume of an individual log from the Timber Class
-        :param timber: Timber   -The parent Timber Class of log, needs to be an instance of Timber
-        :param stem_height: int -The height along the tree stem of the top of the log
-        :param length: int      -The length of the log in feet
-        :param grade: str       -The grade code or grade name of the log's grade. This may be omitted and will be automatically
-                                 calculated. See the documentation for valid grade codes/names
-        :param defect: int      -The defect percentage of the log (as a whole number). 10 % defect = 10. This may be omitted and will
-                                 default to 0.
+        :param timber: Timber           -The parent Timber Class of log, needs to be an instance of Timber
+        :param stem_height: int         -The height along the tree stem of the top of the log
+        :param length: int              -The length of the log in feet
+        :param grade: str               -The grade code or grade name of the log's grade. This may be omitted and will be automatically
+                                         calculated. See the documentation for valid grade codes/names
+        :param defect: int              -The defect percentage of the log (as a whole number). 10 % defect = 10. This may be omitted and will
+                                         default to 0.
         """
-        self._tree = self._check_timber_arg(timber)
+        self._tree = check_timber_arg(timber, self.__class__.__name__)
         self._stem_hgt = int(stem_height)
         self._length = int(length)
         self._defect = int(defect)
@@ -35,7 +35,7 @@ class Log(object):
 
         self._top_dib = self._calc_top_dib()
         if grade != '':
-            self._grade = self._check_log_grade(grade)
+            self._grade = check_log_grade(grade)
         else:
             self._grade = self._calc_log_grade()
 
@@ -133,41 +133,13 @@ class Log(object):
 
         self._length_range = self._get_length_range()
 
-    @staticmethod
-    def _cannot_set():
-        raise ReadOnlyAttributeError
-
-    @staticmethod
-    def _check_log_grade(grade):
-        grd_upper = grade.upper()
-        rev_grd = grd_upper[::-1]
-        if grd_upper in GRADE_NAMES:
-            return grd_upper
-        elif rev_grd in GRADE_NAMES:
-            return rev_grd
-        else:
-            full_name_vals = {val: key for key, val in GRADE_NAMES.items()}
-            for sep in ['.', '_', '-']:
-                full_name_vals.update({val.replace(' ', sep): key for key, val in GRADE_NAMES.items()})
-            if grd_upper in full_name_vals:
-                return full_name_vals[grd_upper]
-            else:
-                raise LogGradeError(grade)
-
-    @staticmethod
-    def _check_timber_arg(timber_arg):
-        if timber_arg.__class__.__name__ == 'Timber':
-            return timber_arg
-        else:
-            raise TimberArgError(timber_arg, Log.__class__.__name__)
-
     @property
     def tree(self):
         return self._tree
 
     @tree.setter
     def tree(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'tree')
 
     @property
     def stem_hgt(self):
@@ -208,7 +180,7 @@ class Log(object):
 
     @species.setter
     def species(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'species')
 
     @property
     def lpa(self):
@@ -216,7 +188,7 @@ class Log(object):
 
     @lpa.setter
     def lpa(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'lpa')
 
     @property
     def top_dib(self):
@@ -233,7 +205,7 @@ class Log(object):
 
     @scrib.setter
     def scrib(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'scrib')
 
     @property
     def grade(self):
@@ -241,7 +213,7 @@ class Log(object):
 
     @grade.setter
     def grade(self, value):
-        self._grade = self._check_log_grade(value)
+        self._grade = check_log_grade(value)
         self._grade_name = GRADE_NAMES[self._grade]
 
     @property
@@ -250,7 +222,7 @@ class Log(object):
 
     @grade_name.setter
     def grade_name(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'grade_name')
 
     @property
     def gross_bf(self):
@@ -258,7 +230,7 @@ class Log(object):
 
     @gross_bf.setter
     def gross_bf(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'gross_bf')
 
     @property
     def gross_cf(self):
@@ -266,7 +238,7 @@ class Log(object):
 
     @gross_cf.setter
     def gross_cf(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'gross_cf')
 
     @property
     def gross_bf_ac(self):
@@ -274,7 +246,7 @@ class Log(object):
 
     @gross_bf_ac.setter
     def gross_bf_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'gross_bf_ac')
 
     @property
     def gross_cf_ac(self):
@@ -282,7 +254,7 @@ class Log(object):
 
     @gross_cf_ac.setter
     def gross_cf_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'gross_cf_ac')
 
     @property
     def net_bf(self):
@@ -290,7 +262,7 @@ class Log(object):
 
     @net_bf.setter
     def net_bf(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'net_bf')
 
     @property
     def net_cf(self):
@@ -298,7 +270,7 @@ class Log(object):
 
     @net_cf.setter
     def net_cf(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'net_cf')
 
     @property
     def net_bf_ac(self):
@@ -306,7 +278,7 @@ class Log(object):
 
     @net_bf_ac.setter
     def net_bf_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'net_bf_ac')
 
     @property
     def net_cf_ac(self):
@@ -314,7 +286,7 @@ class Log(object):
 
     @net_cf_ac.setter
     def net_cf_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'net_cf_ac')
 
     @property
     def length_range(self):
@@ -322,7 +294,7 @@ class Log(object):
 
     @length_range.setter
     def length_range(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'length_range')
 
     @property
     def series(self):
@@ -330,6 +302,6 @@ class Log(object):
 
     @series.setter
     def series(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'series')
 
 

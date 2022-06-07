@@ -1,6 +1,6 @@
 from fpdf import FPDF
 
-from timberpy.timber.timber_config import (
+from timberpy.timber._config import (
     ALL_SPECIES_NAMES,
     LENGTH_SORT
 )

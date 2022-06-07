@@ -1,6 +1,6 @@
 REQUIRED_COLS = {
     'Stand': {
-        'iters': [['S', 'ST', 'STD', 'STND', 'STAND', 'PUNIT'], ['ID', 'CN', 'NM', 'NAME', '']],
+        'iters': [['S', 'ST', 'STD', 'STND', 'STAND', 'PUNIT', 'U', 'UNIT'], ['ID', 'CN', 'NM', 'NAME', '']],
         'idx': None,
         'required': True,
         'type': 'base',
@@ -116,3 +116,6 @@ LOG_COLS = {
         'default': False
     }
 }
+
+
+

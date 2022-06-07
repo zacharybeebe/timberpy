@@ -1,31 +1,34 @@
 import pandas as pd
-from timberpy.timber.log import Log
-from timberpy.timber.timber_config import (
+from timberpy.timber._log import Log
+from timberpy.timber._config import (
     ALL_SPECIES_NAMES,
     TAPER_EQ,
     TAPER_HEIGHTS_EQ,
     TREE_SERIES
 )
-from timberpy.timber.timber_exceptions import (
-    ReadOnlyAttributeError,
-    SpeciesError,
+from timberpy.timber._exceptions import (
+    cannot_set,
+    check_plot_arg,
+    check_species,
+    InvalidPlotNumberError
 )
 
 
 class Timber(object):
-    def __init__(self, tree_number: int, plot_factor: float, species: str, dbh: float, total_height: float,
-                 auto_cruise: bool = False, preferred_log_length: int = 40, minimum_log_length: int = 16, utility_log_dib=3):
+    def __init__(self, expansion_factor: float, species: str, dbh: float, total_height: float,
+                 auto_cruise: bool = False, preferred_log_length: int = 40, minimum_log_length: int = 16, utility_log_dib=3,
+                 plot=None):
         """
-        :param tree_number: int     -The number of the tree within the plot.
-        :param plot_factor: float   -For fixed-area plots use the negative inverse of the plot size (1/30th ac = -30),
-                                     for variable-area plots use the Basal Area Factor (BAF) (40 BAF = 40).
-        :param species: str         -The species name or species code of the tree species. See documentation for valid species name/codes.
-        :param dbh: float           -The Diameter at Breast Height of the tree in inches.
-        :param total_height:        -The Total Height of the tree in feet.
-        :param auto_cruise:         -If this is set to True, the tree will be virtually cruised. See below for more details.
-        :param preferred_log_length:-This value is used by the auto-cruiser, default is industry standard of 40 feet.
-        :param minimum_log_length:  -This value is used by the auto-cruiser, default is industry standard of 16 feet.
-        :param utility_log_dib:     -This value is used by the auto-cruiser, default is industry minimum of 3 inches.
+        :param expansion_factor: float          -For fixed-area plots use the negative inverse of the plot size (1/30th ac = -30),
+                                                 for variable-area plots use the Basal Area Factor (BAF) (40 BAF = 40).
+        :param species: str                     -The species name or species code of the tree species. See documentation for valid species name/codes.
+        :param dbh: float                       -The Diameter at Breast Height of the tree in inches.
+        :param total_height: float              -The Total Height of the tree in feet.
+        :param auto_cruise: bool                -If this is set to True, the tree will be virtually cruised. See below for more details.
+        :param preferred_log_length: int        -This value is used by the auto-cruiser, default is industry standard of 40 feet.
+        :param minimum_log_length: int          -This value is used by the auto-cruiser, default is industry standard of 16 feet.
+        :param utility_log_dib: int             -This value is used by the auto-cruiser, default is industry minimum of 3 inches.
+        :param plot: Plot                       -The plot (Plot class) that the tree will be added to
 
         The auto-cruiser uses stem-taper equations from Czaplewski, Kozak, or Wensel
         (depending on species) to calculate the DIB (diameter inside bark) at any stem height along the tree.
@@ -56,10 +59,8 @@ class Timber(object):
         For inventory metrics, add this Timber Class to a Plot Class using the Plot's .add_tree() method.
 
         """
-
-        self._number = int(tree_number)
-        self._plot_factor = float(plot_factor)
-        self._species = self._check_species(species)
+        self._xfac = float(expansion_factor)
+        self._species = check_species(species)
         self._dbh = float(dbh)
         self._total_hgt = float(total_height)
 
@@ -97,7 +98,15 @@ class Timber(object):
         if self._auto_cruise:
             self._auto_cruise_add_logs()
 
-        self._set_series()
+        if plot is None:
+            self._plot = None
+            self._number = 1
+            self._set_series()
+        else:
+            check_plot_arg(plot, self.__class__.__name__)
+            self._number = len(plot._trees)
+            self._set_series()
+            plot.add_tree(self)  # Sets self._plot
 
     def __getitem__(self, item):
         _item = f'_{item}'
@@ -106,6 +115,16 @@ class Timber(object):
         elif _item in self.__dict__:
             return self.__dict__[_item]
         raise KeyError(f'{self.__class__.__name__} has no attribute {item}')
+
+    def __repr__(self):
+        first = f'<Timber {self._number} | {self._species} | {self._dbh:.1f} dbh | {self._total_hgt:.1f} hgt'
+        if self._plot is not None:
+            if self._plot._stand is not None:
+                return f'{first} (Plot {self._plot._number} | Stand {self._plot._stand._name})>'
+            else:
+                return f'{first} (Plot {self._plot._number})>'
+        else:
+            return f'{first} (Transient)>'
 
     def add_log(self, stem_height: int, length: int, grade: str = '', defect: int = 0):
         """
@@ -142,7 +161,8 @@ class Timber(object):
         lengths = [(stem_heights[i + 1] - hgt) // 2 * 2 for i, hgt in enumerate(stem_heights[:-1])]
 
         for i, (stem_height, length) in enumerate(zip(stem_heights[1:], lengths), 1):
-            self.add_log(stem_height, length)
+            self._logs[i] = Log(self, stem_height, length)
+        self._get_volumes()
 
     def _auto_cruise_log_stem(self, previous_log_stem_height):
         """
@@ -203,17 +223,17 @@ class Timber(object):
         Calculates the Trees per Acre, Basal Area per Acre and Relative Density per Acre
         based on the plot factor
         """
-        if self._plot_factor == 0:
+        if self._xfac == 0:
             return 0, 0, 0
         else:
-            if self._plot_factor > 0:
-                tpa = self._plot_factor / self._ba
-                ba_ac = self._plot_factor
+            if self._xfac > 0:
+                tpa = self._xfac / self._ba
+                ba_ac = self._xfac
                 rd_ac = tpa * self._rd
 
             else:
-                tpa = abs(self._plot_factor)
-                ba_ac = abs(self._plot_factor) * self._ba
+                tpa = abs(self._xfac)
+                ba_ac = abs(self._xfac) * self._ba
                 rd_ac = tpa * self._rd
             return tpa, ba_ac, rd_ac
 
@@ -269,23 +289,6 @@ class Timber(object):
     def _set_series(self):
         self._series = pd.Series([self[f"_{i.replace(' ', '_')}"] for i in TREE_SERIES], index=TREE_SERIES)
 
-    @staticmethod
-    def _cannot_set():
-        raise ReadOnlyAttributeError
-
-    @staticmethod
-    def _check_species(species):
-        spp_upper = species.upper()
-        if spp_upper in ALL_SPECIES_NAMES:
-            return spp_upper
-        else:
-            full_name_vals = {val: key for key, val in ALL_SPECIES_NAMES.items()}
-            for sep in ['.', '_', '-']:
-                full_name_vals.update({val.replace(' ', sep): key for key, val in ALL_SPECIES_NAMES.items()})
-            if spp_upper in full_name_vals:
-                return full_name_vals[spp_upper]
-            else:
-                raise SpeciesError(species)
 
     @property
     def number(self):
@@ -293,15 +296,38 @@ class Timber(object):
 
     @number.setter
     def number(self, value):
-        self._number = int(value)
+        value = int(value)
+        if value < 1:
+            raise InvalidPlotNumberError(value)
+        else:
+            if self._plot is None:
+                self._number = int(value)
+            else:
+                if value > len(self._plot._trees):
+                    value = len(self._plot._trees)
+                self._plot._trees.insert(value - 1, self._plot._trees.pop(self._number - 1))
+                self._number = value
 
     @property
-    def plot_factor(self):
-        return self._plot_factor
+    def plot(self):
+        return self._plot
 
-    @plot_factor.setter
-    def plot_factor(self, value):
-        self._plot_factor = float(value)
+    @plot.setter
+    def plot(self, value):
+        check_plot_arg(value, self.__class__.__name__)
+        if self._plot is None:
+            value.add_tree(self)
+        else:
+            self._plot.remove_tree(self._number)
+            value.add_tree(self)
+
+    @property
+    def xfac(self):
+        return self._xfac
+
+    @xfac.setter
+    def xfac(self, value):
+        self._xfac = float(value)
         self._recalc_metrics()
 
     @property
@@ -310,7 +336,7 @@ class Timber(object):
 
     @species.setter
     def species(self, value):
-        self._species = self._check_species(value)
+        self._species = check_species(value)
         self._recalc_metrics(species_only=True)
 
     @property
@@ -370,7 +396,7 @@ class Timber(object):
 
     @hdr.setter
     def hdr(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'hdr')
 
     @property
     def ba(self):
@@ -378,7 +404,7 @@ class Timber(object):
 
     @ba.setter
     def ba(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'ba')
 
     @property
     def rd(self):
@@ -386,7 +412,7 @@ class Timber(object):
 
     @rd.setter
     def rd(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'rd')
 
     @property
     def tpa(self):
@@ -394,7 +420,7 @@ class Timber(object):
 
     @tpa.setter
     def tpa(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'tpa')
 
     @property
     def ba_ac(self):
@@ -402,7 +428,7 @@ class Timber(object):
 
     @ba_ac.setter
     def ba_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'ba_ac')
 
     @property
     def rd_ac(self):
@@ -410,7 +436,7 @@ class Timber(object):
 
     @rd_ac.setter
     def rd_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'rd_ac')
 
     @property
     def stem_dibs(self):
@@ -418,7 +444,7 @@ class Timber(object):
 
     @stem_dibs.setter
     def stem_dibs(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'stem_dibs')
 
     @property
     def dib_heights(self):
@@ -426,7 +452,7 @@ class Timber(object):
 
     @dib_heights.setter
     def dib_heights(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'dib_heights')
 
     @property
     def merch_dib(self):
@@ -434,7 +460,7 @@ class Timber(object):
 
     @merch_dib.setter
     def merch_dib(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'merch_dib')
 
     @property
     def merch_hgt(self):
@@ -442,7 +468,7 @@ class Timber(object):
 
     @merch_hgt.setter
     def merch_hgt(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'merch_hgt')
 
     @property
     def gross_bf(self):
@@ -450,7 +476,7 @@ class Timber(object):
 
     @gross_bf.setter
     def gross_bf(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'gross_bf')
 
     @property
     def gross_cf(self):
@@ -458,7 +484,7 @@ class Timber(object):
 
     @gross_cf.setter
     def gross_cf(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'gross_cf')
 
     @property
     def gross_bf_ac(self):
@@ -466,7 +492,7 @@ class Timber(object):
 
     @gross_bf_ac.setter
     def gross_bf_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'gross_bf_ac')
 
     @property
     def gross_cf_ac(self):
@@ -474,7 +500,7 @@ class Timber(object):
 
     @gross_cf_ac.setter
     def gross_cf_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'gross_cf_ac')
 
     @property
     def net_bf(self):
@@ -482,7 +508,7 @@ class Timber(object):
 
     @net_bf.setter
     def net_bf(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'net_bf')
 
     @property
     def net_cf(self):
@@ -490,7 +516,7 @@ class Timber(object):
 
     @net_cf.setter
     def net_cf(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'net_cf')
 
     @property
     def net_bf_ac(self):
@@ -498,7 +524,7 @@ class Timber(object):
 
     @net_bf_ac.setter
     def net_bf_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'net_bf_ac')
 
     @property
     def net_cf_ac(self):
@@ -506,7 +532,7 @@ class Timber(object):
 
     @net_cf_ac.setter
     def net_cf_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'net_cf_ac')
 
     @property
     def vbar(self):
@@ -514,7 +540,7 @@ class Timber(object):
 
     @vbar.setter
     def vbar(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'vbar')
 
     @property
     def cbar(self):
@@ -522,7 +548,7 @@ class Timber(object):
 
     @cbar.setter
     def cbar(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'cbar')
 
     @property
     def logs(self):
@@ -530,7 +556,7 @@ class Timber(object):
 
     @logs.setter
     def logs(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'logs')
 
     @property
     def series(self):
@@ -538,7 +564,7 @@ class Timber(object):
 
     @series.setter
     def series(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'series')
 
 
 if __name__ == '__main__':
@@ -563,14 +589,17 @@ if __name__ == '__main__':
     # speed_test(10000)
     # speed_test(1000)
 
-    timber = Timber(1, 40, 'rc', 18.8, 103, auto_cruise=True)
-
-    num = 150
-    print('timber.series ' + ('#' * num) + '\n')
-    print(timber.series.head(len(timber.series)))
-
-    print('\n\ntimber.logs[1].series ' + ('#' * num) + '\n')
-    print(timber.logs[1].series.head(len(timber.logs[1].series)))
+    timber = Timber(40, 'rc', 18.8, 103, auto_cruise=True)
+    print(timber)
+    # for k, v in timber.stem_dibs.items():
+    #     print(f'{k}: {v}')
+    #
+    # num = 150
+    # print('timber.series ' + ('#' * num) + '\n')
+    # print(timber.series.head(len(timber.series)))
+    #
+    # print('\n\ntimber.logs[1].series ' + ('#' * num) + '\n')
+    # print(timber.logs[1].series.head(len(timber.logs[1].series)))
 
 
 

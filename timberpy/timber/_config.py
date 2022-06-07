@@ -1,13 +1,13 @@
-from timberpy.timber.taper_equations import czaplewski, kozak1969, kozak1988, wensel
-from timberpy.timber.taper_equations_cy import czaplewski_heights, kozak1969_heights, kozak1988_heights, wensel_heights
+from timberpy.timber._taper_equations import czaplewski, kozak1969, kozak1988, wensel
+from timberpy.timber._cython._taper_equations_cy import czaplewski_heights, kozak1969_heights, kozak1988_heights, wensel_heights
 
 STAND_SERIES = ['name', 'plot count', 'species', 'tpa', 'ba ac', 'qmd', 'rd ac', 'gross bf ac', 'gross cf ac', 'net bf ac', 'net cf ac',
                 'total hgt', 'merch hgt', 'hdr', 'vbar', 'cbar']
 
-PLOT_SERIES = ['number', 'tree count', 'species', 'tpa', 'ba ac', 'rd ac', 'qmd', 'total hgt', 'merch hgt', 'hdr',
+PLOT_SERIES = ['number', 'xfac', 'tree count', 'species', 'tpa', 'ba ac', 'rd ac', 'qmd', 'total hgt', 'merch hgt', 'hdr',
                'net bf ac', 'net cf ac', 'gross bf ac', 'gross cf ac', 'vbar', 'cbar']
 
-TREE_SERIES = ['number', 'species', 'dbh', 'merch dib', 'total hgt', 'merch hgt', 'hdr', 'ba', 'rd',
+TREE_SERIES = ['number', 'xfac', 'species', 'dbh', 'merch dib', 'total hgt', 'merch hgt', 'hdr', 'ba', 'rd',
                'net bf', 'net cf', 'gross bf', 'gross cf', 'tpa', 'ba ac', 'rd ac',
                'net bf ac', 'net cf ac', 'gross bf ac', 'gross cf ac', 'vbar', 'cbar']
 
@@ -21,7 +21,7 @@ SUMMARY_SERIES_FINAL = ['tpa', 'ba ac', 'rd ac', 'qmd', 'total hgt', 'merch hgt'
 
 STATS_SERIES = ['tpa', 'ba ac', 'rd ac', 'gross bf ac', 'gross cf ac', 'net bf ac', 'net cf ac']
 
-INVENTORY_SERIES = ['stand', 'plot', 'plot factor', 'tree', 'species', 'dbh', 'merch dib', 'total hgt', 'merch hgt']
+INVENTORY_SERIES = ['stand', 'plot', 'xfac', 'tree', 'species', 'dbh', 'merch dib', 'total hgt', 'merch hgt']
 
 LOG_INVENTORY_SERIES = ['log {} stem hgt', 'log {} length', 'log {} top dib', 'log {} grade', 'log {} defect']
 

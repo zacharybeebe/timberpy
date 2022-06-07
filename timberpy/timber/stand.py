@@ -9,9 +9,6 @@ from io import BytesIO
 
 from timberpy.report.report import Report
 from timberpy.inventory.inventory import Inventory
-from timberpy.timber.plot import Plot
-from timberpy.timber.timber import Timber
-from timberpy.timber.log import Log
 # from treetopper.thin import (
 #     ThinTPA,
 #     ThinBA,
@@ -19,7 +16,7 @@ from timberpy.timber.log import Log
 # )
 # from treetopper._exceptions import TargetDensityError
 # from treetopper.fvs import FVS
-from timberpy.timber.timber_config import (
+from timberpy.timber._config import (
     ALL_SPECIES_NAMES,
     GRADE_SORT,
     INVENTORY_SERIES,
@@ -34,24 +31,25 @@ from timberpy.timber.timber_config import (
     STATS_SERIES,
     TREE_SERIES
 )
-from timberpy.timber.timber_exceptions import (
-    DatetimeError,
-    ImportStandError,
-    PlotArgError,
-    ReadOnlyAttributeError
+from timberpy.timber._exceptions import (
+    cannot_set,
+    check_date_arg,
+    check_plot_arg,
+    ImportStandError
 )
+
+import time
+def timer(func):
+    def wrapper(*args, **kwargs):
+        now = time.perf_counter()
+        x = func(*args, **kwargs)
+        after = time.perf_counter()
+        print(f'{func.__name__} took {round(after-now, 5)} seconds\n')
+        return x
+    return wrapper
 
 
 class Stand(object):
-    """The Stand Class represents a stand of timber that has had an inventory conducted on it. It should made up of plots (Plot Class)
-       which contain trees (Timber Classes).
-
-       The Stand class will run calculations and statistics of the current stand conditions and it will run calculations of the log
-       merchantabilty for three metrics: logs per acre, log board feet per acre, and log cubic feet per acre, based on log grades,
-       log length ranges and species.
-
-       """
-
     def __init__(self, name: str, acres: float = 0, date_inventory: str = date.today()):
         """
         The Stand Class represents a stand of timber that has had an inventory conducted on it. It should made up of plots (Plot Class)
@@ -71,7 +69,7 @@ class Stand(object):
         """
         self._name = name.upper()
         self._acres = float(acres)
-        self._date_inventory = self._check_date_arg(date_inventory)
+        self._date_inventory = check_date_arg(date_inventory)
 
         self._plots_df = None
         self._trees_df = None
@@ -115,6 +113,9 @@ class Stand(object):
             return self.__dict__[_item]
         raise KeyError(f'{self.__class__.__name__} has no attribute {item}')
 
+    def __repr__(self):
+        return f'<Stand {self._name} | {self._acres} acres | {self._plot_count} plots | {sum([plot._tree_count for plot in self._plots])} trees>'
+
     # def console_report(self):
     #     """Prints a console-formatted string of the complete stand report"""
     #     print(self._compile_report_text())
@@ -137,19 +138,50 @@ class Stand(object):
     #     if start_file_upon_creation:
     #         startfile(file)
 
-    def add_plot(self, plot: Plot):
+    def add_plot(self, plot):
         """
         Adds a plot to the stand's plots list and re-runs the calculations and statistics of the stand.
         plot argument needs to be the a Plot Class
         """
-        plt = self._check_plot_arg(plot)
-        self._plots.append(plt)
-        self._set_dataframes()
-        self._set_series()
+        plot = check_plot_arg(plot, self.__class__.__name__)
+        plot._stand = self
+        self._plots.append(plot)
+        plot._number = len(self._plots)
+        if plot._series is not None:
+            plot._series['number'] = plot._number
+        self._recalc_metrics()
+
+    def add_plots(self, plots: list):
+        """
+        Add a list of plots at one time, items within list should be Plot class
+        :param plots:                   -A list containing Plot class objects
+        :return: None
+        """
+        for i, plot in enumerate(plots, 1):
+            plot = check_plot_arg(plot, self.__class__.__name__)
+            plot._stand = self
+            self._plots.append(plot)
+            plot._number = i
+            if plot._series is not None:
+                plot._series['number'] = i
+        self._recalc_metrics()
+
+    def remove_plot(self, plot_number):
+        """
+        Removes a plot from the tree list and recalculates metrics
+        :param plot_number:             -The number of the plot (Plot.number) to be removed
+        :return: None
+        """
+        self._plots.pop(plot_number - 1)
+        for i, plot in enumerate(self._plots, 1):
+            plot._number = i
+            plot._series['number'] = i
+        self._recalc_metrics()
 
     def console_report(self):
         self._report.console_report()
 
+    @timer
     def import_sheet(self, filename):
         inv = Inventory(filename)
         if self._name not in inv.data_read:
@@ -157,22 +189,26 @@ class Stand(object):
 
         data = inv.data_read[self._name]
         hdr = data['hdr']
+        stand_plots = []
         for plot_num in data['plots']:
             pf1 = data['plots'][plot_num]['plot_factor']
-            plot = Plot(plot_num, pf1)
+            plot = Plot(pf1)
+            plot_trees = []
             for tree_row in data['plots'][plot_num]['trees']:
-                pf2, tree_num, species, dbh, total_height = tree_row[:5]
+                pf2, _, species, dbh, total_height = tree_row[:5]
                 if total_height in ['', ' ', None]:
                     total_height = (float(dbh) / 12) * hdr
                 if tree_row[-1]:
                     plog, mlog, ut_dib = tree_row[5:-1]
-                    tree = Timber(tree_num, pf2, species, dbh, total_height, True, plog, mlog, ut_dib)
+                    tree = Timber(pf2, species, dbh, total_height, True, plog, mlog, ut_dib)
                 else:
-                    tree = Timber(tree_num, pf2, species, dbh, total_height, False)
+                    tree = Timber(pf2, species, dbh, total_height, False)
                     for log in tree_row[-2]:
                         tree.add_log(*log)
-                plot.add_tree(tree)
-            self.add_plot(plot)
+                plot_trees.append(tree)
+            plot.add_trees(plot_trees)
+            stand_plots.append(plot)
+        self.add_plots(stand_plots)
 
     def plotly_dbh_range(self, column_name, show=True):
         """
@@ -284,6 +320,10 @@ class Stand(object):
             df.loc['TOTALS', column] = self._trees_df[column].mean()
 
         return df[SUMMARY_SERIES_FINAL]
+
+    def _recalc_metrics(self):
+        self._set_dataframes()
+        self._set_series()
 
     def _set_dataframes(self):
         self._set_plot_df()
@@ -434,7 +474,7 @@ class Stand(object):
                 data[0].append(j.format(i))
         for plot in self._plots:
             for tree in plot.trees:
-                temp = [self._name, plot.number, plot.plot_factor, tree.number] + [tree[i.replace(' ', '_')] for i in INVENTORY_SERIES[4:]]
+                temp = [self._name, plot.number, plot.xfac, tree.number] + [tree[i.replace(' ', '_')] for i in INVENTORY_SERIES[4:]]
                 for i in range(1, max_logs + 1):
                     if i in tree.logs:
                         log = tree.logs[i]
@@ -447,48 +487,6 @@ class Stand(object):
     def _set_series(self):
         self._series = pd.Series([self[f"_{i.replace(' ', '_')}"] for i in STAND_SERIES], index=STAND_SERIES)
 
-    @staticmethod
-    def _cannot_set():
-        raise ReadOnlyAttributeError
-
-    @staticmethod
-    def _check_date_arg(date_inventory):
-        if isinstance(date_inventory, datetime):
-            return date_inventory
-        elif isinstance(date_inventory, date):
-            return datetime(date_inventory.year, date_inventory.month, date_inventory.day)
-        elif isinstance(date_inventory, str):
-            delimiters = ['/', '.', ',', '|', '-', '_']
-            formats = ['%m{}%d{}%Y', '%Y{}%m{}%d', '%Y{}%d{}%m', '%d{}%m{}%Y', '%d{}%Y{}%m', '%m{}%Y{}%d']
-            len_dt = len(date_inventory)
-            if len_dt not in [6, 7, 8, 10]:
-                raise DatetimeError(date_inventory)
-            for i in delimiters:
-                if i in date_inventory:
-                    if any([True if not j.isdigit() else False for j in [f'0{j}' if len(j) < 2 else j for j in date_inventory.split(i)]]):
-                        raise DatetimeError(date_inventory)
-                    for f in formats:
-                        x = [f'0{j}' if len(j) < 2 else j for j in date_inventory.split(i)]
-                        idx_y = f.split('{}').index('%Y')
-                        yy = x[idx_y]
-                        if len(yy) == 2:
-                            if int(yy) <= int(str(datetime.now().year)[3:]):
-                                x[idx_y] = f'20{yy}'
-                            else:
-                                x[idx_y] = f'19{yy}'
-                        check_date = i.join(x)
-                        try:
-                            return datetime.strptime(check_date, f.format(i, i))
-                        except ValueError:
-                            continue
-        raise DatetimeError(date_inventory)
-
-    @staticmethod
-    def _check_plot_arg(plot_arg):
-        if isinstance(plot_arg, Plot):
-            return plot_arg
-        else:
-            raise PlotArgError(plot_arg)
 
 
     # def import_sheet_quick(self, file_path: str):
@@ -596,7 +594,7 @@ class Stand(object):
 
     @date_inventory.setter
     def date_inventory(self, value):
-        self._date_inventory = self._check_date_arg(value)
+        self._date_inventory = check_date_arg(value)
 
     @property
     def plots_df(self):
@@ -604,7 +602,7 @@ class Stand(object):
 
     @plots_df.setter
     def plots_df(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'plots_df')
 
     @property
     def trees_df(self):
@@ -612,7 +610,7 @@ class Stand(object):
 
     @trees_df.setter
     def trees_df(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'trees_df')
 
     @property
     def summary_df(self):
@@ -620,7 +618,7 @@ class Stand(object):
 
     @summary_df.setter
     def summary_df(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'summary_df')
 
     @property
     def dbh_df(self):
@@ -628,7 +626,7 @@ class Stand(object):
 
     @dbh_df.setter
     def dbh_df(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'dbh_df')
 
     @property
     def stats_df(self):
@@ -636,7 +634,7 @@ class Stand(object):
 
     @stats_df.setter
     def stats_df(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'stats_df')
 
     @property
     def logs_df(self):
@@ -644,7 +642,7 @@ class Stand(object):
 
     @logs_df.setter
     def logs_df(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'logs_df')
 
     @property
     def logs_summary_df(self):
@@ -652,7 +650,7 @@ class Stand(object):
 
     @logs_summary_df.setter
     def logs_summary_df(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'logs_summary_df')
 
     @property
     def inventory_df(self):
@@ -660,7 +658,7 @@ class Stand(object):
 
     @inventory_df.setter
     def inventory_df(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'inventory_df')
 
     @property
     def plots(self):
@@ -668,7 +666,7 @@ class Stand(object):
 
     @plots.setter
     def plots(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'plots')
 
     @property
     def plot_count(self):
@@ -676,7 +674,7 @@ class Stand(object):
 
     @plot_count.setter
     def plot_count(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'plot_count')
 
     @property
     def tree_count(self):
@@ -684,7 +682,7 @@ class Stand(object):
 
     @tree_count.setter
     def tree_count(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'tree_count')
 
     @property
     def species(self):
@@ -692,7 +690,7 @@ class Stand(object):
 
     @species.setter
     def species(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'species')
 
     @property
     def species_count(self):
@@ -700,7 +698,7 @@ class Stand(object):
 
     @species_count.setter
     def species_count(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'species_count')
 
     @property
     def tpa(self):
@@ -708,7 +706,7 @@ class Stand(object):
 
     @tpa.setter
     def tpa(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'tpa')
 
     @property
     def ba_ac(self):
@@ -716,7 +714,7 @@ class Stand(object):
 
     @ba_ac.setter
     def ba_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'ba_ac')
 
     @property
     def rd_ac(self):
@@ -724,7 +722,7 @@ class Stand(object):
 
     @rd_ac.setter
     def rd_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'rd_ac')
 
     @property
     def gross_bf_ac(self):
@@ -732,7 +730,7 @@ class Stand(object):
 
     @gross_bf_ac.setter
     def gross_bf_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'gross_bf_ac')
 
     @property
     def gross_cf_ac(self):
@@ -740,7 +738,7 @@ class Stand(object):
 
     @gross_cf_ac.setter
     def gross_cf_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'gross_cf_ac')
 
     @property
     def net_bf_ac(self):
@@ -748,7 +746,7 @@ class Stand(object):
 
     @net_bf_ac.setter
     def net_bf_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'net_bf_ac')
 
     @property
     def net_cf_ac(self):
@@ -756,7 +754,7 @@ class Stand(object):
 
     @net_cf_ac.setter
     def net_cf_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'net_cf_ac')
 
     @property
     def total_hgt(self):
@@ -764,7 +762,7 @@ class Stand(object):
 
     @total_hgt.setter
     def total_hgt(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'total_hgt')
 
     @property
     def merch_hgt(self):
@@ -772,7 +770,7 @@ class Stand(object):
 
     @merch_hgt.setter
     def merch_hgt(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'merch_hgt')
 
     @property
     def hdr(self):
@@ -780,7 +778,7 @@ class Stand(object):
 
     @hdr.setter
     def hdr(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'hdr')
 
     @property
     def vbar(self):
@@ -788,7 +786,7 @@ class Stand(object):
 
     @vbar.setter
     def vbar(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'vbar')
 
     @property
     def cbar(self):
@@ -796,7 +794,7 @@ class Stand(object):
 
     @cbar.setter
     def cbar(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'cbar')
 
     @property
     def series(self):
@@ -804,7 +802,7 @@ class Stand(object):
 
     @series.setter
     def series(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'series')
 
 
 
@@ -815,101 +813,110 @@ if __name__ == '__main__':
     #file = 'C:/ZBEE490/Dev/other/timberpy/timberpy/del_scratch/xlsx/stand_data_full_with_quick.xlsx'
     file = 'C:/ZBEE490/Dev/other/timberpy/timberpy/del_scratch/fvs/NRF_HQ.xlsx'
     stand = Stand('NRF_HQ', acres=22.4, date_inventory='01/01/00')
-    stand.import_sheet(file)
-    #stand.plotly_dbh_range('net bf ac')
 
 
-    # pf1 = 40
-    # pf2 = 33.61
-    # pf3 = -20
-    # pf4 = -30
-    # pf5 = 20
+    # stand.import_sheet(file)
+
+
+    pf1 = 40
+    pf2 = 33.61
+    pf3 = -20
+    pf4 = -30
+    pf5 = 20
+
+    tree_data = [
+        # Plot 1
+        [[Timber(pf1, 'DF', 29.5, 119), [[42, 40, 'S2', 5], [83, 40, 'S3', 0], [102, 18, 'S4', 10]]],
+         [Timber(pf1, 'WH', 18.9, 102), [[42, 40, 'S2', 0], [79, 36, 'S4', 5]]],
+         [Timber(pf1, 'WH', 20.2, 101), [[42, 40, 'S2', 5], [83, 40, 'S4', 0]]],
+         [Timber(pf1, 'WH', 19.9, 100), [[42, 40, 'S2', 0], [83, 40, 'S4', 15]]],
+         [Timber(pf1, 'DF', 20.6, 112), [[42, 40, 'S2', 0], [83, 40, 'S3', 5], [100, 16, 'UT', 10]]]],
+        # Plot 2
+        [[Timber(pf2, 'DF', 25.0, 117), [[42, 40, 'SM', 0], [83, 40, 'S3', 5], [100, 16, 'S4', 0]]],
+         [Timber(pf2, 'DF', 14.3, 105), [[42, 40, 'S3', 0], [79, 36, 'S4', 0]]],
+         [Timber(pf2, 'DF', 20.4, 119), [[42, 40, 'S2', 5], [83, 40, 'S3', 5], [100, 16, 'S4', 5]]],
+         [Timber(pf2, 'DF', 16.0, 108), [[42, 40, 'S3', 5], [83, 40, 'S3', 10]]],
+         [Timber(pf2, 'RC', 20.2, 124), [[42, 40, 'CR', 5], [83, 40, 'CR', 5], [104, 20, 'CR', 5]]],
+         [Timber(pf2, 'RC', 19.5, 116), [[42, 40, 'CR', 10], [83, 40, 'CR', 5], [100, 16, 'CR', 0]]],
+         [Timber(pf2, 'RC', 23.4, 121), [[42, 40, 'CR', 0], [83, 40, 'CR', 0], [106, 22, 'CR', 5]]],
+         [Timber(pf2, 'DF', 17.8, 116), [[42, 40, 'S2', 0], [83, 40, 'S3', 0], [100, 16, 'S4', 10]]],
+         [Timber(pf2, 'DF', 22.3, 125), [[42, 40, 'SM', 0], [83, 40, 'S3', 5], [108, 24, 'S4', 0]]]],
+        # Plot 3
+        [[Timber(pf3, 'DF', 29.5, 119, auto_cruise=True)],
+         [Timber(pf3, 'SF', 18.9, 102, auto_cruise=True)],
+         [Timber(pf3, 'SF', 20.2, 101, auto_cruise=True)],
+         [Timber(pf3, 'SF', 19.9, 100, auto_cruise=True)],
+         [Timber(pf3, 'DF', 20.6, 112, auto_cruise=True)]],
+        # Plot 4
+        [[Timber(pf4, 'DF', 25.0, 117, auto_cruise=True)],
+         [Timber(pf4, 'SF', 14.3, 105, auto_cruise=True)],
+         [Timber(pf4, 'SF', 20.4, 119, auto_cruise=True)],
+         [Timber(pf4, 'SF', 16.0, 108, auto_cruise=True)],
+         [Timber(pf4, 'RC', 20.2, 124, auto_cruise=True)]],
+        # Plot 5
+        [[Timber(pf5, 'rc', 40.5, 175), [[112, 110, 'PL', 0], [143, 40, 'S3', 0]]],
+         [Timber(pf5, 'rc', 33.3, 142), [[72, 70, 'PL', 0], [113, 40, 'S3', 5]]],
+         [Timber(pf5, 'rc', 41.7, 177), [[112, 110, 'PL', 0], [143, 40, 'S3', 0]]],
+         [Timber(pf5, 'rc', 32.3, 140), [[72, 70, 'PL', 0], [113, 40, 'S3', 15]]],
+         [Timber(pf5, 'rc', 39.8, 165), [[112, 110, 'PL', 0], [143, 40, 'S3', 5]]]],
+    ]
+    stand_plots = []
+    for plot_num, (plot_trees, plot_factor) in enumerate(zip(tree_data, [pf1, pf2, pf3, pf4, pf5]), 1):
+        plot = Plot(plot_factor)
+        trees = []
+        for data in plot_trees:
+            if len(data) == 1:
+                trees.append(data[0])
+            else:
+                tree, logs = data
+                for log in logs:
+                    tree.add_log(*log)
+                trees.append(tree)
+        plot.add_trees(trees)
+        stand_plots.append(plot)
+    stand.add_plots(stand_plots)
+
+    print(stand)
+    print(stand.plots[2])
+    print(stand.plots[2].trees[3])
+
+    # num = 150
+    # hd = 20
+    # pd.set_option('display.max_columns', None, 'display.width', None, 'display.max_rows', None)
     #
-    # tree_data = [
-    #     # Plot 1
-    #     [[Timber(1, pf1, 'DF', 29.5, 119), [[42, 40, 'S2', 5], [83, 40, 'S3', 0], [102, 18, 'S4', 10]]],
-    #      [Timber(2, pf1, 'WH', 18.9, 102), [[42, 40, 'S2', 0], [79, 36, 'S4', 5]]],
-    #      [Timber(3, pf1, 'WH', 20.2, 101), [[42, 40, 'S2', 5], [83, 40, 'S4', 0]]],
-    #      [Timber(4, pf1, 'WH', 19.9, 100), [[42, 40, 'S2', 0], [83, 40, 'S4', 15]]],
-    #      [Timber(5, pf1, 'DF', 20.6, 112), [[42, 40, 'S2', 0], [83, 40, 'S3', 5], [100, 16, 'UT', 10]]]],
-    #     # Plot 2
-    #     [[Timber(1, pf2, 'DF', 25.0, 117), [[42, 40, 'SM', 0], [83, 40, 'S3', 5], [100, 16, 'S4', 0]]],
-    #      [Timber(2, pf2, 'DF', 14.3, 105), [[42, 40, 'S3', 0], [79, 36, 'S4', 0]]],
-    #      [Timber(3, pf2, 'DF', 20.4, 119), [[42, 40, 'S2', 5], [83, 40, 'S3', 5], [100, 16, 'S4', 5]]],
-    #      [Timber(4, pf2, 'DF', 16.0, 108), [[42, 40, 'S3', 5], [83, 40, 'S3', 10]]],
-    #      [Timber(5, pf2, 'RC', 20.2, 124), [[42, 40, 'CR', 5], [83, 40, 'CR', 5], [104, 20, 'CR', 5]]],
-    #      [Timber(6, pf2, 'RC', 19.5, 116), [[42, 40, 'CR', 10], [83, 40, 'CR', 5], [100, 16, 'CR', 0]]],
-    #      [Timber(7, pf2, 'RC', 23.4, 121), [[42, 40, 'CR', 0], [83, 40, 'CR', 0], [106, 22, 'CR', 5]]],
-    #      [Timber(8, pf2, 'DF', 17.8, 116), [[42, 40, 'S2', 0], [83, 40, 'S3', 0], [100, 16, 'S4', 10]]],
-    #      [Timber(9, pf2, 'DF', 22.3, 125), [[42, 40, 'SM', 0], [83, 40, 'S3', 5], [108, 24, 'S4', 0]]]],
-    #     # Plot 3
-    #     [[Timber(1, pf3, 'DF', 29.5, 119, auto_cruise=True)],
-    #      [Timber(2, pf3, 'SF', 18.9, 102, auto_cruise=True)],
-    #      [Timber(3, pf3, 'SF', 20.2, 101, auto_cruise=True)],
-    #      [Timber(4, pf3, 'SF', 19.9, 100, auto_cruise=True)],
-    #      [Timber(5, pf3, 'DF', 20.6, 112, auto_cruise=True)]],
-    #     # Plot 4
-    #     [[Timber(1, pf4, 'DF', 25.0, 117, auto_cruise=True)],
-    #      [Timber(2, pf4, 'SF', 14.3, 105, auto_cruise=True)],
-    #      [Timber(3, pf4, 'SF', 20.4, 119, auto_cruise=True)],
-    #      [Timber(4, pf4, 'SF', 16.0, 108, auto_cruise=True)],
-    #      [Timber(5, pf4, 'RC', 20.2, 124, auto_cruise=True)]],
-    #     # Plot 5
-    #     [[Timber(1, pf5, 'rc', 40.5, 175), [[112, 110, 'PL', 0], [143, 40, 'S3', 0]]],
-    #      [Timber(2, pf5, 'rc', 33.3, 142), [[72, 70, 'PL', 0], [113, 40, 'S3', 5]]],
-    #      [Timber(3, pf5, 'rc', 41.7, 177), [[112, 110, 'PL', 0], [143, 40, 'S3', 0]]],
-    #      [Timber(4, pf5, 'rc', 32.3, 140), [[72, 70, 'PL', 0], [113, 40, 'S3', 15]]],
-    #      [Timber(5, pf5, 'rc', 39.8, 165), [[112, 110, 'PL', 0], [143, 40, 'S3', 5]]]],
-    # ]
+    # #stand.console_report()
     #
-    # for plot_num, (plot_trees, plot_factor) in enumerate(zip(tree_data, [pf1, pf2, pf3, pf4, pf5]), 1):
-    #     plot = Plot(plot_num, plot_factor)
-    #     for data in plot_trees:
-    #         if len(data) == 1:
-    #             plot.add_tree(data[0])
-    #         else:
-    #             tree, logs = data
-    #             for log in logs:
-    #                 tree.add_log(*log)
-    #             plot.add_tree(tree)
-    #     stand.add_plot(plot)
-
-    num = 150
-    hd = 20
-    pd.set_option('display.max_columns', None, 'display.width', None, 'display.max_rows', None)
-
-    #stand.console_report()
-
-
-    stand.plotly_dbh_range('net bf ac')
-    #stand.to_excel('test')
-
-    print('stand.series ' + ('#' * num) + '\n')
-    print(stand.series.head(len(stand.series)))
-
-    print('\n\n\nstand.plots_df ' + ('#' * num) + '\n')
-    print(stand.plots_df.head(len(stand.plots_df)))
-
-    print('\n\n\nstand.trees_df ' + ('#' * num) + '\n')
-    print(stand.trees_df.head(len(stand.trees_df)))
-
-    print('\n\n\nstand.summary_df ' + ('#' * num) + '\n')
-    print(stand.summary_df.head(len(stand.summary_df)))
-
-    print('\n\n\nstand.dbh_df ' + ('#' * num) + '\n')
-    print(stand.dbh_df.head(len(stand.dbh_df)))
-
-    print('\n\n\nstand.stats_df ' + ('#' * num) + '\n')
-    print(stand.stats_df.head(len(stand.stats_df)))
-
-    print('\n\n\nstand.logs_df ' + ('#' * num) + '\n')
-    print(stand.logs_df.head(len(stand.logs_df)))
-
-    print('\n\n\nstand.logs_summary_df ' + ('#' * num) + '\n')
-    print(stand.logs_summary_df.head(len(stand.logs_summary_df)))
-
-    print('\n\n\nstand.inventory_df ' + ('#' * num) + '\n')
-    print(stand.inventory_df.head(len(stand.inventory_df)))
+    #
+    # stand.plotly_dbh_range('net bf ac')
+    # # stand.plotly_summary('net bf ac')
+    # #stand.to_excel('test')
+    #
+    # print('stand.series ' + ('#' * num) + '\n')
+    # print(stand.series.head(len(stand.series)))
+    #
+    # print('\n\n\nstand.plots_df ' + ('#' * num) + '\n')
+    # print(stand.plots_df.head(len(stand.plots_df)))
+    #
+    # print('\n\n\nstand.trees_df ' + ('#' * num) + '\n')
+    # print(stand.trees_df.head(len(stand.trees_df)))
+    #
+    # print('\n\n\nstand.summary_df ' + ('#' * num) + '\n')
+    # print(stand.summary_df.head(len(stand.summary_df)))
+    #
+    # print('\n\n\nstand.dbh_df ' + ('#' * num) + '\n')
+    # print(stand.dbh_df.head(len(stand.dbh_df)))
+    #
+    # print('\n\n\nstand.stats_df ' + ('#' * num) + '\n')
+    # print(stand.stats_df.head(len(stand.stats_df)))
+    #
+    # print('\n\n\nstand.logs_df ' + ('#' * num) + '\n')
+    # print(stand.logs_df.head(len(stand.logs_df)))
+    #
+    # print('\n\n\nstand.logs_summary_df ' + ('#' * num) + '\n')
+    # print(stand.logs_summary_df.head(len(stand.logs_summary_df)))
+    #
+    # print('\n\n\nstand.inventory_df ' + ('#' * num) + '\n')
+    # print(stand.inventory_df.head(len(stand.inventory_df)))
 
     # print(stand.plot_count)
     #

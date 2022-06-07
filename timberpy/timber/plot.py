@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import plotly.express as plt
-from timberpy.timber.timber_config import (
+from timberpy.timber._config import (
     ALL_SPECIES_NAMES,
     GRADE_SORT,
     LENGTH_SORT,
@@ -13,23 +13,25 @@ from timberpy.timber.timber_config import (
     TREE_SERIES,
 
 )
-from timberpy.timber.timber_exceptions import (
-    ReadOnlyAttributeError,
-    TimberArgError
+from timberpy.timber._exceptions import (
+    cannot_set,
+    check_stand_arg,
+    check_timber_arg,
+    InvalidPlotNumberError
 )
 
 
 class Plot(object):
-    def __init__(self, plot_number: int, plot_factor: float):
+    def __init__(self, expansion_factor: float, stand=None):
         """
-        :param plot_number: int     - The number of the plot within the stand
-        :param plot_factor: float   - For fixed-area plots use the negative inverse of the plot size (1/30th ac = -30),
-                                      for variable-area plots use the Basal Area Factor (BAF) (40 BAF = 40)
+        :param expansion_factor: float      -For fixed-area plots use the negative inverse of the plot size (1/30th ac = -30),
+                                             for variable-area plots use the Basal Area Factor (BAF) (40 BAF = 40)
+        :param stand: Stand                 -The stand (Stand class) that the plot will be added to
 
         Use the plot.add_tree() method to add trees to the plot's inventory. Trees should be instances of the Timber Class
+        Alternatively you can add an instanstiated plot to the Timber __init__ as the plot arg
         """
-        self._number = int(plot_number)
-        self._plot_factor = float(plot_factor)
+        self._xfac = float(expansion_factor)
 
         self._trees_df = None
         self._summary_df = None
@@ -59,6 +61,14 @@ class Plot(object):
         self._cbar = 0
         self._series = None
 
+        if stand is None:
+            self._stand = None
+            self._number = 1
+        else:
+            check_stand_arg(stand, self.__class__.__name__)
+            self._number = len(stand._plots)
+            stand.add_plot(self)  # Sets self._stand
+
     def __getitem__(self, item):
         _item = f'_{item}'
         if item in self.__dict__:
@@ -67,16 +77,50 @@ class Plot(object):
             return self.__dict__[_item]
         raise KeyError(f'{self.__class__.__name__} has no attribute {item}')
 
+    def __repr__(self):
+        first = f'<Plot {self._number} | {self._tree_count} trees'
+        if self._stand is not None:
+            return f'{first} (Stand {self._stand._name})>'
+        else:
+            return f'{first} (Transient)>'
+
     def add_tree(self, timber):
         """
         The timber argument needs to be an instance of the Timber Class
         The Timber Class is added to the plot's trees list and plot calculations and statistics are re-run
         """
-        tree = self._check_timber_arg(timber)
-        self._trees.append(tree)
-        self._set_dataframes()
-        self._set_attrs()
-        self._set_series()
+        timber = check_timber_arg(timber, self.__class__.__name__)
+        timber._plot = self
+        self._trees.append(timber)
+        timber._number = len(self._trees)
+        timber._series['number'] = timber._number
+        self._recalc_metrics()
+
+    def add_trees(self, timbers: list):
+        """
+        Add a list of trees at one time, items within list should be Timber class
+        :param timbers:                   -A list containing Timber class objects
+        :return: None
+        """
+        for i, timber in enumerate(timbers, 1):
+            timber = check_timber_arg(timber, self.__class__.__name__)
+            timber._plot = self
+            self._trees.append(timber)
+            timber._number = i
+            timber._series['number'] = i
+        self._recalc_metrics()
+
+    def remove_tree(self, tree_number):
+        """
+        Removes a tree from the tree list and recalculates metrics
+        :param tree_number:             -The number of the tree (Timber.number) to be removed
+        :return: None
+        """
+        self._trees.pop(tree_number - 1)
+        for i, tree in enumerate(self._trees, 1):
+            tree._number = i
+            tree._series['number'] = i
+        self._recalc_metrics()
 
     def plotly_dbh_range(self, column_name, show=True):
         """
@@ -157,6 +201,11 @@ class Plot(object):
             df.loc['TOTALS', column] = self._trees_df[column].mean()
 
         return df[SUMMARY_SERIES_FINAL]
+
+    def _recalc_metrics(self):
+        self._set_dataframes()
+        self._set_attrs()
+        self._set_series()
 
     def _set_dataframes(self):
         """
@@ -253,7 +302,7 @@ class Plot(object):
         self._species = tuple(sorted(set(self._trees_df['species'].to_list()), key=lambda x: SPECIES_SORT[x]))
         self._species_count = len(self._species)
 
-        for attr in PLOT_SERIES[3:]:
+        for attr in PLOT_SERIES[4:]:
             setattr(self, f"_{attr.replace(' ', '_')}", self._summary_df.loc['TOTALS', attr])
 
     def _set_series(self):
@@ -263,35 +312,47 @@ class Plot(object):
     SET INVENTORY DB
     """
 
-    @staticmethod
-    def _cannot_set():
-        raise ReadOnlyAttributeError
-
-    @staticmethod
-    def _check_timber_arg(timber_arg):
-        if timber_arg.__class__.__name__ == 'Timber':
-            return timber_arg
-        else:
-            raise TimberArgError(timber_arg, Plot.__class__.__name__)
-
     @property
     def number(self):
         return self._number
 
     @number.setter
     def number(self, value):
-        self._number = int(value)
+        value = int(value)
+        if value < 1:
+            raise InvalidPlotNumberError(value)
+        else:
+            if self._stand is None:
+                self._number = int(value)
+            else:
+                if value > len(self._stand._plots):
+                    value = len(self._stand._plots)
+                self._stand._plots.insert(value - 1, self._stand._plots.pop(self._number - 1))
+                self._number = value
 
     @property
-    def plot_factor(self):
-        return self._plot_factor
+    def stand(self):
+        return self._stand
 
-    @plot_factor.setter
-    def plot_factor(self, value):
-        self._plot_factor = float(value)
+    @stand.setter
+    def stand(self, value):
+        check_stand_arg(value, self.__class__.__name__)
+        if self._stand is None:
+            value.add_plot(self)
+        else:
+            self._stand.remove_plot(self._number)
+            value.add_plot(self)
+
+    @property
+    def xfac(self):
+        return self._xfac
+
+    @xfac.setter
+    def xfac(self, value):
+        self._xfac = float(value)
         for tree in self._trees:
-            tree.plot_factor = self._plot_factor
-        self._set_dataframes()
+            tree.xfac = self._xfac
+        self._recalc_metrics()
 
     @property
     def trees_df(self):
@@ -299,7 +360,7 @@ class Plot(object):
 
     @trees_df.setter
     def trees_df(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'trees_df')
 
     @property
     def summary_df(self):
@@ -307,7 +368,7 @@ class Plot(object):
 
     @summary_df.setter
     def summary_df(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'summary_df')
 
     @property
     def dbh_df(self):
@@ -315,7 +376,7 @@ class Plot(object):
 
     @dbh_df.setter
     def dbh_df(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'dbh_df')
 
     @property
     def logs_df(self):
@@ -323,7 +384,7 @@ class Plot(object):
 
     @logs_df.setter
     def logs_df(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'logs_df')
 
     @property
     def logs_summary_df(self):
@@ -331,7 +392,7 @@ class Plot(object):
 
     @logs_summary_df.setter
     def logs_summary_df(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'logs_summary_df')
 
     @property
     def trees(self):
@@ -339,7 +400,7 @@ class Plot(object):
 
     @trees.setter
     def trees(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'trees')
 
     @property
     def tree_count(self):
@@ -347,7 +408,7 @@ class Plot(object):
 
     @tree_count.setter
     def tree_count(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'tree_count')
 
     @property
     def species(self):
@@ -355,7 +416,7 @@ class Plot(object):
 
     @species.setter
     def species(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'species')
 
     @property
     def species_count(self):
@@ -363,7 +424,7 @@ class Plot(object):
 
     @species_count.setter
     def species_count(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'species_count')
 
     @property
     def tpa(self):
@@ -371,7 +432,7 @@ class Plot(object):
 
     @tpa.setter
     def tpa(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'tpa')
 
     @property
     def ba_ac(self):
@@ -379,7 +440,7 @@ class Plot(object):
 
     @ba_ac.setter
     def ba_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'ba_ac')
 
     @property
     def rd_ac(self):
@@ -387,7 +448,7 @@ class Plot(object):
 
     @rd_ac.setter
     def rd_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'rd_ac')
 
     @property
     def gross_bf_ac(self):
@@ -395,7 +456,7 @@ class Plot(object):
 
     @gross_bf_ac.setter
     def gross_bf_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'gross_bf_ac')
 
     @property
     def gross_cf_ac(self):
@@ -403,7 +464,7 @@ class Plot(object):
 
     @gross_cf_ac.setter
     def gross_cf_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'gross_cf_ac')
 
     @property
     def net_bf_ac(self):
@@ -411,7 +472,7 @@ class Plot(object):
 
     @net_bf_ac.setter
     def net_bf_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'net_bf_ac')
 
     @property
     def net_cf_ac(self):
@@ -419,7 +480,7 @@ class Plot(object):
 
     @net_cf_ac.setter
     def net_cf_ac(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'net_cf_ac')
 
     @property
     def total_hgt(self):
@@ -427,7 +488,7 @@ class Plot(object):
 
     @total_hgt.setter
     def total_hgt(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'total_hgt')
 
     @property
     def merch_hgt(self):
@@ -435,7 +496,7 @@ class Plot(object):
 
     @merch_hgt.setter
     def merch_hgt(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'merch_hgt')
 
     @property
     def hdr(self):
@@ -443,7 +504,7 @@ class Plot(object):
 
     @hdr.setter
     def hdr(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'hdr')
 
     @property
     def vbar(self):
@@ -451,7 +512,7 @@ class Plot(object):
 
     @vbar.setter
     def vbar(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'vbar')
 
     @property
     def cbar(self):
@@ -459,7 +520,7 @@ class Plot(object):
 
     @cbar.setter
     def cbar(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'cbar')
 
     @property
     def series(self):
@@ -467,37 +528,43 @@ class Plot(object):
 
     @series.setter
     def series(self, value):
-        self._cannot_set()
+        cannot_set(self.__class__.__name__, 'series')
 
 
 if __name__ == '__main__':
     from timberpy.timber.timber import Timber
-    plot = Plot(1, 33.61)
-    plot_factor = plot._plot_factor
+    plot = Plot(33.61)
+    plot_factor = plot.xfac
     tree_data = [
-        [Timber(1, plot_factor, 'DF', 25.0, 117), [[42, 40, 'SM', 0], [83, 40, 'S3', 5], [100, 16, 'S4', 0]]],
-        [Timber(2, plot_factor, 'DF', 14.3, 105), [[42, 40, 'S3', 0], [79, 36, 'S4', 0]]],
-        [Timber(3, plot_factor, 'DF', 20.4, 119), [[42, 40, 'S2', 5], [83, 40, 'S3', 5], [100, 16, 'S4', 5]]],
-        [Timber(4, plot_factor, 'DF', 16.0, 108), [[42, 40, 'S3', 5], [83, 40, 'S3', 10]]],
-        [Timber(5, plot_factor, 'RC', 20.2, 124), [[42, 40, 'CR', 5], [83, 40, 'CR', 5], [104, 20, 'CR', 5]]],
-        [Timber(6, plot_factor, 'RC', 19.5, 116), [[42, 40, 'CR', 10], [83, 40, 'CR', 5], [100, 16, 'CR', 0]]],
-        [Timber(7, plot_factor, 'RC', 23.4, 121), [[42, 40, 'CR', 0], [83, 40, 'CR', 0], [106, 22, 'CR', 5]]],
-        [Timber(8, plot_factor, 'DF', 17.8, 116), [[42, 40, 'S2', 0], [83, 40, 'S3', 0], [100, 16, 'S4', 10]]],
-        [Timber(9, plot_factor, 'DF', 22.3, 125), [[42, 40, 'SM', 0], [83, 40, 'S3', 5], [108, 24, 'S4', 0]]]
+        [Timber(plot_factor, 'DF', 25.0, 117), [[42, 40, 'SM', 0], [83, 40, 'S3', 5], [100, 16, 'S4', 0]]],
+        [Timber(plot_factor, 'DF', 14.3, 105), [[42, 40, 'S3', 0], [79, 36, 'S4', 0]]],
+        [Timber(plot_factor, 'DF', 20.4, 119), [[42, 40, 'S2', 5], [83, 40, 'S3', 5], [100, 16, 'S4', 5]]],
+        [Timber(plot_factor, 'DF', 16.0, 108), [[42, 40, 'S3', 5], [83, 40, 'S3', 10]]],
+        [Timber(plot_factor, 'RC', 20.2, 124), [[42, 40, 'CR', 5], [83, 40, 'CR', 5], [104, 20, 'CR', 5]]],
+        [Timber(plot_factor, 'RC', 19.5, 116), [[42, 40, 'CR', 10], [83, 40, 'CR', 5], [100, 16, 'CR', 0]]],
+        [Timber(plot_factor, 'RC', 23.4, 121), [[42, 40, 'CR', 0], [83, 40, 'CR', 0], [106, 22, 'CR', 5]]],
+        [Timber(plot_factor, 'DF', 17.8, 116), [[42, 40, 'S2', 0], [83, 40, 'S3', 0], [100, 16, 'S4', 10]]],
+        [Timber(plot_factor, 'DF', 22.3, 125), [[42, 40, 'SM', 0], [83, 40, 'S3', 5], [108, 24, 'S4', 0]]]
     ]
 
-    for tree, logs in tree_data:
+    for timber, logs in tree_data:
         for log in logs:
-            tree.add_log(*log)
-        plot.add_tree(tree)
+            timber.add_log(*log)
+    plot.add_trees([i[0] for i in tree_data])
+    print(plot)
+    print(plot.trees[4])
 
-    pd.set_option('display.max_columns', None, 'display.width', None)
-
-    num = 150
-    hd = 20
-
-    # plot.plotly_summary('net bf ac')
-
+    # for timber in plot.trees:
+    #     print(timber.number)
+    #     print(timber.species)
+    #
+    # pd.set_option('display.max_columns', None, 'display.width', None)
+    #
+    # num = 150
+    # hd = 20
+    #
+    # plot.plotly_dbh_range('net bf ac')
+    #
     # print('plot.series ' + ('#' * num) + '\n')
     # print(plot.series.head(len(plot.series)))
     #

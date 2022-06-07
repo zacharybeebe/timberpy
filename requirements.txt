@@ -1,3 +1,4 @@
+Cython
 fpdf
 numpy
 openpyxl
